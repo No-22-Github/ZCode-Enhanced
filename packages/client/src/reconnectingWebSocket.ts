@@ -13,6 +13,16 @@ export interface WebConnectionSnapshot {
   services: IServiceAccessor | null;
 }
 
+/**
+ * 结构化最小事件目标：desktop host / server 等 Node 侧编译会把 client 源码编进
+ * 无 dom lib 的程序（tsconfig.host.json → @zcode/server → @zcode/client），
+ * 公共类型一旦点名 Window/Document 就会在消费方编译失败，所以这里只做结构化声明。
+ */
+interface ReconnectEventTargetLike {
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+}
+
 interface ReconnectingWebSocketOptions extends Pick<
   WebSocketConnectionOptions,
   "createSocket" | "timeoutMs"
@@ -21,10 +31,8 @@ interface ReconnectingWebSocketOptions extends Pick<
   probeTimeoutMs?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
-  windowTarget?: Pick<Window, "addEventListener" | "removeEventListener">;
-  documentTarget?: Pick<Document, "addEventListener" | "removeEventListener"> & {
-    readonly visibilityState: string;
-  };
+  windowTarget?: ReconnectEventTargetLike;
+  documentTarget?: ReconnectEventTargetLike & { readonly visibilityState: string };
   isOnline?: () => boolean;
 }
 
@@ -33,11 +41,16 @@ export function createReconnectingWebSocket(
   wsUrl: string,
   options: ReconnectingWebSocketOptions = {},
 ) {
-  const windowTarget = options.windowTarget ?? (typeof window === "undefined" ? undefined : window);
-  const documentTarget =
-    options.documentTarget ?? (typeof document === "undefined" ? undefined : document);
-  const isOnline =
-    options.isOnline ?? (() => typeof navigator === "undefined" || navigator.onLine !== false);
+  // 经 globalThis 间接取浏览器全局：直接点名 window/document/navigator 在
+  // 无 dom lib 的消费方程序（desktop host、server）里编译不过，见上方结构化注释。
+  const browserScope = globalThis as {
+    window?: ReconnectEventTargetLike;
+    document?: ReconnectEventTargetLike & { readonly visibilityState: string };
+    navigator?: { onLine?: boolean };
+  };
+  const windowTarget = options.windowTarget ?? browserScope.window;
+  const documentTarget = options.documentTarget ?? browserScope.document;
+  const isOnline = options.isOnline ?? (() => browserScope.navigator?.onLine !== false);
   const listeners = new Set<() => void>();
   const pageServices = createReconnectingPageServices();
   let snapshot: WebConnectionSnapshot = { status: "connecting", services: null, generation: 0 };
