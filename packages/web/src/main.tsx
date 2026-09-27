@@ -1,9 +1,9 @@
 /* eslint-disable max-lines -- Web 入口集中编排启动、路由与 workspace shell wiring，与 Root.tsx 同样先保持入口收口，避免跨层状态拆散。 */
 import { createRoot } from "react-dom/client";
+import { useEffect, useState } from "react";
 import {
   AppErrorBoundary,
   Root,
-  ZCodeIntlProvider,
   generateMobileDeviceFingerprint,
   playTaskNotificationSound,
   readWebActiveSessionRecord,
@@ -11,7 +11,8 @@ import {
   type Theme,
 } from "@zcode/ui";
 import "@zcode/ui/styles.css";
-import { connectViaWebSocket } from "@zcode/client";
+import { createReconnectingWebSocket, type WebConnectionSnapshot } from "@zcode/client";
+import { WebConnectionBoundary } from "./WebConnectionBoundary.js";
 import { WebCallbackPage } from "./auth/WebCallbackPage.js";
 import { createWebAuthService } from "./auth/webAuthService.js";
 import { WEB_ZAI_OAUTH_CONFIG, resolveWebAuthDevReturnTo } from "./auth/webZaiOAuthConfig.js";
@@ -446,7 +447,7 @@ function renderWebBootstrapError(error: unknown): void {
   );
 }
 
-/** listSessions 失败（网络/服务异常）同样按“会话不存在”兜底，不阻塞启动。 */
+/** 仅在服务端确认会话不存在时移除初始定位；网络异常保留会话。 */
 async function dropStaleInitialTaskId(
   bootstrap: WebBootstrapResult,
   services: WebServices,
@@ -467,11 +468,49 @@ async function dropStaleInitialTaskId(
       bootstrap.initialTaskId = undefined;
     }
   } catch {
-    bootstrap.initialTaskId = undefined;
+    // 网络失败不能证明会话已删除；保留定位，连接恢复后由订阅读取权威状态。
   }
 }
 
-type WebServices = Awaited<ReturnType<typeof connectViaWebSocket>>;
+type WebServices = NonNullable<WebConnectionSnapshot["services"]>;
+
+function ConnectedWebRoot({
+  bootstrap,
+  services,
+  platform,
+}: {
+  bootstrap: WebBootstrapResult;
+  services: WebServices;
+  platform: IPlatformService;
+}) {
+  const [initial, setInitial] = useState<WebBootstrapResult | null>(null);
+  useEffect(() => {
+    if (initial) return;
+    let cancelled = false;
+    const candidate = { ...bootstrap };
+    void dropStaleInitialTaskId(candidate, services).then(() => {
+      if (!cancelled) setInitial(candidate);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrap, initial, services]);
+  if (!initial) return null;
+  return (
+    <Root
+      services={services}
+      platform={platform}
+      initialWorkspaceAbsPath={initial.initialWorkspaceAbsPath}
+      initialWorkspaceIdentity={initial.initialWorkspaceIdentity}
+      initialTaskId={initial.initialTaskId}
+      restoreSession={initial.restoreSession}
+      allowOpenWorkspace={initial.allowOpenWorkspace}
+      preferDirectoryBrowser
+      supportsEmbeddedBrowser={false}
+      allowRemoteWorkspace={false}
+    />
+  );
+}
 
 async function bootstrapWebApp() {
   const params = new URLSearchParams(window.location.search);
@@ -494,34 +533,22 @@ async function bootstrapWebApp() {
   }
 
   try {
-    const services = await connectViaWebSocket(bootstrap.wsUrl, {
-      onClose: () => {},
-    });
-    // 存下来的会话可能已在服务器侧删除：先查一次会话列表，不在就退回工作区首页，
-    // 不让失效 taskId 进入 Root 后在会话加载处报错。
-    await dropStaleInitialTaskId(bootstrap, services);
+    const connection = createReconnectingWebSocket(bootstrap.wsUrl);
     const platform = createWebPlatform();
     document.title = "ZCode - Web + Server";
+    connection.start();
+    // bfcache 的 pagehide 不销毁 owner；pageshow 会主动探活。真正离页才清理。
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) connection.dispose();
+    });
 
     root.render(
       <AppErrorBoundary>
-        <ZCodeIntlProvider
-          settingService={services.settingService}
-          broadcastService={services.broadcastService}
-        >
-          <Root
-            services={services}
-            platform={platform}
-            initialWorkspaceAbsPath={bootstrap.initialWorkspaceAbsPath}
-            initialWorkspaceIdentity={bootstrap.initialWorkspaceIdentity}
-            initialTaskId={bootstrap.initialTaskId}
-            restoreSession={bootstrap.restoreSession}
-            allowOpenWorkspace={bootstrap.allowOpenWorkspace}
-            preferDirectoryBrowser
-            supportsEmbeddedBrowser={false}
-            allowRemoteWorkspace={false}
-          />
-        </ZCodeIntlProvider>
+        <WebConnectionBoundary connection={connection}>
+          {(services) => (
+            <ConnectedWebRoot bootstrap={bootstrap} services={services} platform={platform} />
+          )}
+        </WebConnectionBoundary>
       </AppErrorBoundary>,
     );
   } catch (error) {

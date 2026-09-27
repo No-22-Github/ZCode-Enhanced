@@ -180,6 +180,11 @@ const enUS: Record<string, string> = {
   "common.connecting": "Connecting...",
   "common.cancel": "Cancel",
   "common.retry": "Retry",
+  "web.connection.connecting": "Connecting to server…",
+  "web.connection.reconnecting":
+    "Connection lost. Reconnecting… Your draft is kept; check the conversation before resending.",
+  "web.connection.offline":
+    "You are offline. Your draft is kept; the connection will recover automatically.",
   "common.close": "Close",
   "chat.plan.removeMarker": "Turn off Plan mode",
   "common.confirm": "Confirm",

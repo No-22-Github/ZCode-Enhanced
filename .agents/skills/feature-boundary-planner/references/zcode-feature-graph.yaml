@@ -252,6 +252,10 @@ nodes:
         symbol: DELIVERY_PROFILES
       - file: packages/services/src/zcode-agent/zcodeAgentConnectionScope.ts
         symbol: ZCodeAgentV4ClientMode
+      - file: packages/client/src/reconnectingWebSocket.ts
+        symbol: createReconnectingWebSocket
+      - file: packages/web/src/WebConnectionBoundary.tsx
+        symbol: WebConnectionBoundary
   - id: capability.composer-trigger-routing
     kind: capability
     label: Composer primary and compatibility trigger routing
