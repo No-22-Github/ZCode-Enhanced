@@ -86,23 +86,20 @@ function WebStatsMonitor() {
   }, [expanded, preferences.pinned, collapse, close]);
   if (!snapshot) return null;
   const narrow = view.width < 600;
-  const panelWidth = Math.min(336, view.width - view.left - view.right - 24);
+  const panelWidth = Math.min(narrow ? 300 : 336, view.width - view.left - view.right - 24);
   const minX = view.x + view.left + 12;
   const maxX = view.x + view.width - view.right - 12 - panelWidth;
   const naturalX =
     placement.position.side === "right"
       ? placement.style.left - panelWidth - 8
       : placement.style.left + width + 8;
-  const maxHeight = Math.max(
-    100,
-    view.height - view.top - view.bottom - (narrow ? height + 44 : 24),
+  // 手机只展示摘要并限制半屏高度，避免桌面明细面板遮住整个工作区。
+  const availableHeight = view.height - view.top - view.bottom;
+  const maxHeight = narrow ? Math.min(360, availableHeight * 0.5) : availableHeight - 24;
+  const panelTop = Math.max(
+    view.y + view.top + 12,
+    Math.min(placement.style.top, view.y + view.height - view.bottom - 12 - panelHeight),
   );
-  const panelTop = narrow
-    ? view.y + view.top + 12
-    : Math.max(
-        view.y + view.top + 12,
-        Math.min(placement.style.top, view.y + view.height - view.bottom - 12 - panelHeight),
-      );
   const p = snapshot.latest;
   const label = intl.formatMessage(
     { id: "serverStats.ballAriaLabel" },
@@ -123,15 +120,14 @@ function WebStatsMonitor() {
           tabIndex={-1}
           className="fixed z-[81] overflow-y-auto overscroll-contain rounded-xl border border-popover-border bg-popover text-foreground shadow-lg outline-none"
           style={{
-            left: narrow
-              ? view.x + (view.width - panelWidth) / 2
-              : Math.min(maxX, Math.max(minX, naturalX)),
+            left: Math.min(maxX, Math.max(minX, naturalX)),
             top: panelTop,
             width: panelWidth,
             maxHeight,
           }}
         >
           <StatsPanel
+            compact={narrow}
             snapshot={snapshot}
             online={online}
             latency={latency}

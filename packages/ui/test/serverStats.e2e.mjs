@@ -109,21 +109,32 @@ try {
     JSON.parse(await page.evaluate(() => localStorage.getItem("zcode:server-stats-ball"))).side,
     "left",
   );
-  for (const width of [390, 320]) {
-    await page.setViewportSize({ width, height: 640 });
+  for (const [width, height] of [
+    [390, 640],
+    [320, 640],
+    [320, 480],
+  ]) {
+    await page.setViewportSize({ width, height });
     await trigger.click();
     await panel.waitFor();
     const rect = await panel.boundingBox();
     assert.ok(
-      rect.x >= 0 && rect.x + rect.width <= width && rect.y >= 0 && rect.y + rect.height <= 640,
+      rect.x >= 0 && rect.x + rect.width <= width && rect.y >= 0 && rect.y + rect.height <= height,
     );
+    assert.ok(rect.height <= height / 2, "mobile summary leaves half the screen available");
+    assert.ok(rect.width <= 300);
+    assert.equal(await panel.getByRole("img").count(), 0);
+    assert.equal(await panel.getByRole("button", { name: "24 h", exact: true }).count(), 0);
+    assert.equal(await panel.getByText("25%", { exact: true }).count(), 1);
     assert.equal(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth), true);
-    await page.screenshot({ path: `${output}/mobile-${width}.png` });
-    await page.keyboard.press("Escape");
+    await page.screenshot({ path: `${output}/mobile-${width}-${height}.png` });
+    await panel.getByRole("button", { name: "Collapse panel", exact: true }).click();
+    assert.equal(await panel.isVisible(), false);
   }
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.evaluate(() => document.documentElement.classList.add("dark", "zai-dark"));
   await trigger.click();
+  assert.equal(await panel.getByRole("img").count(), 2, "desktop charts return after resize");
   await page.getByRole("button", { name: "Dual-ring ball", exact: true }).click();
   await page.screenshot({ path: `${output}/desktop-dark.png` });
   offline = true;
