@@ -397,7 +397,9 @@ export function useWorkspaceSidebarFooterUsageSummaryState({
   const upgradeTargetProviderId =
     selectedUpgradeProviderId ??
     currentUsageSource?.providerId ??
-    availableCodingPlanProviders[0]?.providerId ??
+    // availableProviders 已放宽为 string provider id；此 hook 只发布内置
+    // Coding Plan provider，首个来源必属窄类型。
+    (availableCodingPlanProviders[0]?.providerId as SidebarUsageCodingPlanProviderId | undefined) ??
     resolveSidebarCodingPlanUpgradeFallbackProviderId(providerFamilyDomain);
   return {
     audience: currentUsageSource?.audience,

@@ -21,15 +21,13 @@ import {
   resolveMcpQuotaLimit,
 } from "@/lib/codingPlanQuotaPresentation.js";
 import { renderOAuthProviderIcon } from "@/lib/oauthProviderIcon.js";
-import type {
-  SidebarUsageCodingPlanProviderId,
-  SidebarUsageCodingPlanSourceId,
-} from "@/lib/sidebarUsageCodingPlanProviderPreference.js";
 
 export interface CodingPlanUsageRemainingEntitlement {
-  sourceId?: SidebarUsageCodingPlanSourceId;
-  providerId: SidebarUsageCodingPlanProviderId;
-  accountAccess: ZCodeProviderAccountAccess | ZCodeAccountAccess;
+  sourceId?: string;
+  /** 账号来源是内置 Coding Plan provider id；普通 API Key provider 直用自身 id。 */
+  providerId: string;
+  /** 普通 API Key provider 没有账号连接，缺失时额度重置等账号操作自动退化为不可用。 */
+  accountAccess?: ZCodeProviderAccountAccess | ZCodeAccountAccess;
   label?: string;
   snapshot: UsageEntitlementSnapshot | null;
   loading: boolean;
@@ -37,15 +35,15 @@ export interface CodingPlanUsageRemainingEntitlement {
 }
 
 export interface CodingPlanUsageAvailableProvider {
-  providerId: SidebarUsageCodingPlanProviderId;
-  accountAccess: ZCodeProviderAccountAccess | ZCodeAccountAccess;
+  providerId: string;
+  accountAccess?: ZCodeProviderAccountAccess | ZCodeAccountAccess;
   label: string;
 }
 
 export interface CodingPlanUsageRemainingState {
-  activeProviderId?: SidebarUsageCodingPlanSourceId;
+  activeProviderId?: string;
   displayedEntitlement: CodingPlanUsageRemainingEntitlement | null;
-  displayedProviderId?: SidebarUsageCodingPlanSourceId;
+  displayedProviderId?: string;
   hasAnyActiveCodingPlan: boolean;
   loading: boolean;
   providerEntitlements: CodingPlanUsageRemainingEntitlement[];
@@ -54,8 +52,8 @@ export interface CodingPlanUsageRemainingState {
 }
 
 interface CodingPlanUsageRemainingTabProvider {
-  id: SidebarUsageCodingPlanSourceId;
-  providerId: SidebarUsageCodingPlanProviderId;
+  id: string;
+  providerId: string;
   label: string;
 }
 
@@ -117,7 +115,7 @@ function formatCodingPlanProviderTabAriaLabel(providerId: string): string {
 
 function getEntitlementSourceId(
   entitlement: Pick<CodingPlanUsageRemainingEntitlement, "providerId" | "sourceId">,
-): SidebarUsageCodingPlanSourceId {
+): string {
   return entitlement.sourceId ?? entitlement.providerId;
 }
 
@@ -136,7 +134,7 @@ export function resolveCodingPlanUsageRemainingState(params: {
   availableProviders: CodingPlanUsageAvailableProvider[];
   entitlements: CodingPlanUsageRemainingEntitlement[];
   modelProvidersLoading: boolean;
-  selectedProviderId?: SidebarUsageCodingPlanSourceId;
+  selectedProviderId?: string;
 }): CodingPlanUsageRemainingState | null {
   const providerEntitlements = params.entitlements.filter(
     (entitlement) =>
@@ -225,9 +223,9 @@ export function CodingPlanUsageRemainingPanel({
   className?: string;
   entitlements: CodingPlanUsageRemainingEntitlement[];
   modelProvidersLoading: boolean;
-  onProviderChange?: (providerId: SidebarUsageCodingPlanSourceId) => void;
+  onProviderChange?: (providerId: string) => void;
   onUsageClick?: () => void;
-  selectedProviderId?: SidebarUsageCodingPlanSourceId;
+  selectedProviderId?: string;
 }) {
   const { intl, locale } = useZCodeIntl();
   const state = useMemo(

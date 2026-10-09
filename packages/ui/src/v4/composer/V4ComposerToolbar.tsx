@@ -19,6 +19,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BUILTIN_MODEL_PROVIDER_IDS,
   getModelProviderFamilySpec,
+  resolveModelProviderFamilyIdByBaseURL,
   resolveModelProviderFamilySpecByProviderId,
   TID_V4_MODEL_CONFIG,
   TID_V4_COMPOSER_INPUT,
@@ -41,6 +42,10 @@ import { ModelConfigSelect, type ModelSelectGroup } from "@/ModelConfigSelect.js
 import { Button } from "@/components/ui/button.js";
 import { ChatContextUsage } from "@/chat-input-toolbar/display.js";
 import {
+  hasActiveCodingPlanSnapshot,
+  type CodingPlanUsageAvailableProvider,
+} from "@/CodingPlanUsageRemainingPanel.js";
+import {
   hasChatCodingPlanUsageRemaining,
   type ChatCodingPlanUsageRemainingConfig,
 } from "@/chat-input-toolbar/CodingPlanContextUsage.js";
@@ -62,7 +67,10 @@ import {
   setPendingSettingsUsageCodingPlanIntent,
 } from "@/lib/settingsNavigation.js";
 import { useTabStore } from "@/store/TabStoreProvider.js";
-import type { ModelSelectionView } from "@zcode/services";
+import type {
+  ModelSelectionView,
+  ProviderSettingsView,
+} from "@zcode/services";
 import type { ModelSelectionState } from "@/hooks/useModelSelectionView.js";
 import { useProviderSettingsView } from "@/hooks/useProviderSettingsView.js";
 import { useSettings } from "@/hooks/useSettingService.js";
@@ -87,11 +95,11 @@ import {
   type CodingPlanUsageSource,
 } from "@/lib/codingPlanUsageSources.js";
 import {
-  type SidebarUsageCodingPlanProviderId,
   type SidebarUsageCodingPlanSourceId,
   writeSidebarUsageCodingPlanProviderPreference,
 } from "@/lib/sidebarUsageCodingPlanProviderPreference.js";
 import { resolveEntitledAccountProviderAccess } from "@/lib/accountProviderAccess.js";
+import { buildUsageEntitlementCacheKey } from "@/lib/usageEntitlementCache.js";
 import { useEnterpriseCodingPlanProducts } from "@/settings/model-provider-section/useEnterpriseCodingPlanProducts.js";
 import {
   resolveDraftDisplayedConfig,
@@ -137,6 +145,11 @@ type V4ContextPlanConnection =
       providerId:
         | typeof BUILTIN_MODEL_PROVIDER_IDS.zaiStartPlan
         | typeof BUILTIN_MODEL_PROVIDER_IDS.bigmodelStartPlan;
+    }
+  | {
+      family: ProviderFamilyDomain;
+      kind: "apiKey";
+      providerId: string;
     };
 
 function resolveFamilyForPlanProviderId(providerId: string | null | undefined): {
@@ -164,10 +177,15 @@ function resolveFamilyForPlanProviderId(providerId: string | null | undefined): 
 function resolveV4ContextPlanConnection(params: {
   connectionSelections?: ProviderFamilyConnectionSelectionSettings | null;
   providerId?: string | null;
+  providerSettingsView?: ProviderSettingsView | null;
 }): V4ContextPlanConnection {
   const providerFamily = resolveFamilyForPlanProviderId(params.providerId);
   if (!providerFamily) {
-    return { kind: "none" };
+    const apiKeyConnection = resolveV4ApiKeyPlanConnection({
+      providerId: params.providerId,
+      providerSettingsView: params.providerSettingsView ?? null,
+    });
+    return apiKeyConnection ?? { kind: "none" };
   }
 
   // Start 额度属于输入框的有效模型；全局付费连接不能作为它的查询门禁。
@@ -211,6 +229,37 @@ function resolveV4ContextPlanConnection(params: {
       | typeof BUILTIN_MODEL_PROVIDER_IDS.zaiIndividualCodingPlan
       | typeof BUILTIN_MODEL_PROVIDER_IDS.bigmodelIndividualCodingPlan,
   };
+}
+
+/**
+ * 普通 API Key provider 也可能持有官方 Plan Key（套餐控制台手动复制的 Key）。
+ * 命中「手动 Key access + Z.ai/BigModel 官方域名 baseURL」时按 apiKey 连接放行，
+ * 让 Composer 的 5 小时/每周额度面板与账号 Coding Plan 走同一套 entitlement 查询。
+ * 服务端 apiKeyProviderQuotaAuthorization 会再做一次相同边界的校验。
+ */
+function resolveV4ApiKeyPlanConnection(params: {
+  providerId?: string | null;
+  providerSettingsView: ProviderSettingsView | null;
+}): Extract<V4ContextPlanConnection, { kind: "apiKey" }> | null {
+  const providerId = params.providerId?.trim();
+  if (!providerId || !params.providerSettingsView) {
+    return null;
+  }
+  const provider = params.providerSettingsView.providers.find(
+    (item) => item.providerId === providerId,
+  );
+  if (!provider) {
+    return null;
+  }
+  const access = provider.effectiveConfig.access;
+  if (access?.type !== "api-key" && access?.type !== "zhipu-coding-plan-api-key") {
+    return null;
+  }
+  const family = resolveModelProviderFamilyIdByBaseURL(provider.effectiveConfig.api?.baseUrl);
+  if (!family) {
+    return null;
+  }
+  return { family, kind: "apiKey", providerId };
 }
 
 function resolveContextTeamUsageSourceFromEntitlementSnapshot({
@@ -465,9 +514,13 @@ function V4ComposerModelControlsImpl({
     [intl, openCodingPlanUpgrade],
   );
   const handleOpenUsageDetails = useCallback(
-    (sourceId?: SidebarUsageCodingPlanSourceId) => {
+    (sourceId?: string) => {
       if (sourceId) {
-        writeSidebarUsageCodingPlanProviderPreference(sourceId);
+        // apiKey plan 连接不会走到这里（onUsageClick 置空）；能进入的 sourceId
+        // 都是内置/团队 Coding Plan 来源，落偏好写入安全。
+        writeSidebarUsageCodingPlanProviderPreference(
+          sourceId as SidebarUsageCodingPlanSourceId,
+        );
       }
       // 剩余额度「更多」直达 Coding Plan 使用统计（按上面写入的来源偏好选中当前套餐），
       // 不落到应用用量；通用 Usage 入口仍走 setPendingSettingsUsageIntent。
@@ -482,8 +535,9 @@ function V4ComposerModelControlsImpl({
       resolveV4ContextPlanConnection({
         connectionSelections: sharedSettings?.providerFamilyConnectionSelections,
         providerId: effectiveConfig?.provider,
+        providerSettingsView,
       }),
-    [effectiveConfig?.provider, sharedSettings?.providerFamilyConnectionSelections],
+    [effectiveConfig?.provider, providerSettingsView, sharedSettings?.providerFamilyConnectionSelections],
   );
   const contextAccountProviderAccess = useMemo(
     () =>
@@ -552,7 +606,9 @@ function V4ComposerModelControlsImpl({
   );
   const contextTeamUsageSourceCacheRef = useRef<CodingPlanUsageSource[]>([]);
   const contextCodingPlanUsageProviderId =
-    contextPlanConnection.kind === "personalCoding" || contextPlanConnection.kind === "teamCoding"
+    contextPlanConnection.kind === "personalCoding" ||
+    contextPlanConnection.kind === "teamCoding" ||
+    contextPlanConnection.kind === "apiKey"
       ? contextPlanConnection.providerId
       : undefined;
   const contextCodingPlanUsageTeamSource = useMemo(
@@ -587,7 +643,7 @@ function V4ComposerModelControlsImpl({
     // 保留最近解析过的团队 source，避免输入框 context 余额跟随水合顺序闪断。
     contextTeamUsageSourceCacheRef.current = nextCache.slice(0, 8);
   }, [contextCodingPlanUsageTeamSource]);
-  const contextCodingPlanUsageSelectedSourceId: SidebarUsageCodingPlanSourceId | undefined =
+  const contextCodingPlanUsageSelectedSourceId: string | undefined =
     contextPlanConnection.kind === "teamCoding"
       ? contextCodingPlanUsageTeamSource?.id
       : contextCodingPlanUsageProviderId;
@@ -610,23 +666,98 @@ function V4ComposerModelControlsImpl({
     cacheKey: contextCodingPlanUsageTeamSource?.id,
     refreshOnMount: false,
   });
+  // 官方 Plan Key 手动填在普通 API Key provider 上的探测入口：服务端用同一把 Key
+  // 查 Coding Plan 的 subscription/quota。非套餐 Key 探测失败由下方 entitlements
+  // 分支过滤，不会把 Composer 触发器或错误占位常驻展示给普通 Key 用户。
+  const apiKeyPlanConnection =
+    contextPlanConnection.kind === "apiKey" ? contextPlanConnection : null;
+  const apiKeyPlanProviderFingerprint = useMemo(() => {
+    if (apiKeyPlanConnection?.kind !== "apiKey") {
+      return "";
+    }
+    const provider = providerSettingsView?.providers.find(
+      (item) => item.providerId === apiKeyPlanConnection.providerId,
+    );
+    return [
+      providerSettingsView?.revision ?? 0,
+      provider?.effectiveConfig.access?.type ?? "",
+      provider?.effectiveConfig.api?.baseUrl ?? "",
+    ].join("|");
+  }, [apiKeyPlanConnection, providerSettingsView]);
+  const apiKeyPlanEntitlement = useUsageEntitlement({
+    enabled: !providerSourcesLoading && Boolean(apiKeyPlanConnection),
+    includeSubscription: true,
+    preferredProviderId: apiKeyPlanConnection?.providerId,
+    allowDisabledPreferredProvider: true,
+    requirePreferredProvider: true,
+    allowEnvApiKey: false,
+    cacheKey: buildUsageEntitlementCacheKey({
+      providerId: apiKeyPlanConnection?.providerId ?? "",
+      providerFingerprint: apiKeyPlanProviderFingerprint,
+    }),
+    refreshOnMount: false,
+  });
+  const apiKeyPlanProbeKey = apiKeyPlanConnection
+    ? buildUsageEntitlementCacheKey({
+        providerId: apiKeyPlanConnection.providerId,
+        providerFingerprint: apiKeyPlanProviderFingerprint,
+      })
+    : "";
+  const apiKeyPlanProbedKeyRef = useRef("");
+  useEffect(() => {
+    // Provider 配置未就绪时 hook 的 enabled 为 false、refresh 是 no-op；
+    // 这里必须等 ready 再探测，否则探测标记会被空跑消耗掉。
+    if (providerSourcesLoading) {
+      return;
+    }
+    if (!apiKeyPlanProbeKey || apiKeyPlanProbedKeyRef.current === apiKeyPlanProbeKey) {
+      return;
+    }
+    apiKeyPlanProbedKeyRef.current = apiKeyPlanProbeKey;
+    // 选中普通 provider 时静默探测一次：官方 Plan Key 会拿到 subscription/quota
+    // 快照后显示额度触发器；非套餐 Key 探测失败由失败退避兜住，不会反复请求。
+    void apiKeyPlanEntitlement.refresh({ silent: true, reason: "access" });
+  }, [apiKeyPlanEntitlement.refresh, apiKeyPlanProbeKey, providerSourcesLoading]);
   const refreshTaskEntitlements = useCallback(
     async (options?: UsageEntitlementRefreshOptions) => {
       // Team Plan 的 context 面板使用 sourceId 隔离自己的 freshness key；任务边界刷新时
       // 与全局 entitlement 一起发布，底层 request key 会合并相同团队请求。
-      await Promise.all([refreshCodingPlanEntitlements(options), teamEntitlement.refresh(options)]);
+      // apiKey plan 探测同属 context 面板数据源，hover/access 刷新一并覆盖。
+      await Promise.all([
+        refreshCodingPlanEntitlements(options),
+        teamEntitlement.refresh(options),
+        apiKeyPlanEntitlement.refresh(options),
+      ]);
     },
-    [refreshCodingPlanEntitlements, teamEntitlement.refresh],
+    [
+      apiKeyPlanEntitlement.refresh,
+      refreshCodingPlanEntitlements,
+      teamEntitlement.refresh,
+    ],
   );
-  const contextCodingPlanUsageProviders = useMemo(() => {
-    if (contextPlanConnection.kind !== "personalCoding" || !contextCodingPlanUsageProviderId) {
+  const contextCodingPlanUsageProviders = useMemo<CodingPlanUsageAvailableProvider[]>(() => {
+    if (!contextCodingPlanUsageProviderId) {
+      return [];
+    }
+    if (contextPlanConnection.kind === "apiKey") {
+      const label = providerSettingsView?.providers.find(
+        (item) => item.providerId === contextCodingPlanUsageProviderId,
+      )?.providerName;
+      return [
+        {
+          providerId: contextCodingPlanUsageProviderId,
+          label: label?.trim() || contextCodingPlanUsageProviderId,
+        },
+      ];
+    }
+    if (contextPlanConnection.kind !== "personalCoding") {
       return [];
     }
     const access = contextAccountProviderAccess;
     if (!access) return [];
     return [
       {
-        providerId: contextCodingPlanUsageProviderId as SidebarUsageCodingPlanProviderId,
+        providerId: contextCodingPlanUsageProviderId,
         accountAccess: access.access,
         label:
           access.label ||
@@ -635,7 +766,12 @@ function V4ComposerModelControlsImpl({
             : "BigModel - Coding Plan"),
       },
     ];
-  }, [contextAccountProviderAccess, contextCodingPlanUsageProviderId, contextPlanConnection.kind]);
+  }, [
+    contextAccountProviderAccess,
+    contextCodingPlanUsageProviderId,
+    contextPlanConnection.kind,
+    providerSettingsView,
+  ]);
   const codingPlanUsageEntitlements = useMemo<
     ChatCodingPlanUsageRemainingConfig["entitlements"]
   >(() => {
@@ -649,6 +785,33 @@ function V4ComposerModelControlsImpl({
           snapshot: teamEntitlement.snapshot,
           loading: teamEntitlement.loading,
           error: teamEntitlement.error,
+        },
+      ];
+    }
+
+    if (
+      contextPlanConnection.kind === "apiKey" &&
+      contextCodingPlanUsageProviderId &&
+      contextCodingPlanUsageProviders.length > 0
+    ) {
+      // 官方 Plan Key 探测：只有已确认的套餐快照才发布条目。非套餐 Key 探测失败
+      // 或未返回时保持空列表，Composer 触发器整体隐藏，不给普通 Key 用户
+      // 常驻错误占位或加载闪烁。
+      const snapshot = apiKeyPlanEntitlement.snapshot;
+      if (
+        !snapshot ||
+        !hasActiveCodingPlanSnapshot(snapshot, contextCodingPlanUsageProviderId)
+      ) {
+        return [];
+      }
+      return [
+        {
+          sourceId: contextCodingPlanUsageProviderId,
+          providerId: contextCodingPlanUsageProviderId,
+          label: contextCodingPlanUsageProviders[0]!.label,
+          snapshot,
+          loading: apiKeyPlanEntitlement.loading,
+          error: apiKeyPlanEntitlement.error,
         },
       ];
     }
@@ -673,8 +836,11 @@ function V4ComposerModelControlsImpl({
       },
     ];
   }, [
+    apiKeyPlanEntitlement.error,
+    apiKeyPlanEntitlement.loading,
+    apiKeyPlanEntitlement.snapshot,
     contextCodingPlanUsageProviderId,
-    contextCodingPlanUsageProviders.length,
+    contextCodingPlanUsageProviders,
     contextCodingPlanUsageTeamSource,
     contextPlanConnection.kind,
     entitlements,
@@ -690,16 +856,23 @@ function V4ComposerModelControlsImpl({
   const codingPlanUsageRemainingConfig = useMemo<
     ChatCodingPlanUsageRemainingConfig | undefined
   >(() => {
-    if (contextPlanConnection.kind !== "personalCoding" && !contextCodingPlanUsageTeamSource) {
+    if (
+      contextPlanConnection.kind !== "personalCoding" &&
+      contextPlanConnection.kind !== "apiKey" &&
+      !contextCodingPlanUsageTeamSource
+    ) {
       return undefined;
     }
+    const isApiKeyConnection = contextPlanConnection.kind === "apiKey";
     return {
       availableProviders: contextCodingPlanUsageProviders,
       entitlements: codingPlanUsageEntitlements,
       modelProvidersLoading: providerSourcesLoading,
       onEntitlementRefresh: () => refreshTaskEntitlements({ force: true, silent: true }),
       onAccess: () => refreshTaskEntitlements({ silent: true, reason: "access" }),
-      onUsageClick: handleUsageClick,
+      // apiKey plan 不提供「使用统计」详情入口：Usage 统计页的 monitor 链路
+      // 仍然只对内置 Coding Plan provider 开放，普通 provider id 会直接报错。
+      onUsageClick: isApiKeyConnection ? undefined : handleUsageClick,
       selectedProviderId: contextCodingPlanUsageSelectedSourceId,
     };
   }, [

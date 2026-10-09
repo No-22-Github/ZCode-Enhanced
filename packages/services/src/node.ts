@@ -398,6 +398,7 @@ import {
   type IAccountRequestAuthService,
 } from "./model-provider/accountRequestAuthService.js";
 import { createUsageStatsService } from "./usage-stats/usageStatsService.js";
+import { createApiKeyProviderQuotaAuthorizationResolver } from "./usage-stats/apiKeyProviderQuotaAuthorization.js";
 import { createCodingPlanSubscriptionService } from "./coding-plan-subscription/codingPlanSubscriptionService.js";
 import { createClientConfigService } from "./client-config/clientConfigService.js";
 import { IClientConfigService } from "./client-config/clientConfig.js";
@@ -2431,6 +2432,30 @@ export function createLocalServices(options: {
   // 注册链上的懒工厂（如 OffPeak）会各自创建 tasks-index sqlite repo；先收集到本数组，
   // services 集合建好后在 return 前统一登记进 sharedSqliteRepos 侧表
   const sqliteReposToClose: Array<{ close(): void }> = [];
+  // 普通 provider 手动填入官方 Plan Key 时复用 Coding Plan 的 quota/limit 链路查 5h/周限额。
+  const resolveApiKeyProviderQuotaAuthorization = createApiKeyProviderQuotaAuthorizationResolver({
+    resolveProvider: (providerId) => {
+      const provider = providerRuntime.registryService.getProvider(
+        providerId as Parameters<typeof providerRuntime.registryService.getProvider>[0],
+      );
+      if (!provider) return undefined;
+      return {
+        providerId: provider.providerId,
+        providerName: provider.providerName,
+        config: {
+          access: provider.config.access
+            ? {
+                type: provider.config.access.type,
+                ...(provider.config.access.type === "zhipu-account"
+                  ? {}
+                  : { apiKey: provider.config.access.apiKey }),
+              }
+            : null,
+          api: { baseUrl: provider.config.api?.baseUrl },
+        },
+      };
+    },
+  });
   const services = new ServiceCollection()
     .register(IFileService, fileService)
     .register(IMediaPreviewService, mediaPreviewService)
@@ -2472,6 +2497,11 @@ export function createLocalServices(options: {
         credentialService,
         zcodeAgentService,
         officialMcpCredentialSource,
+        // registry 读取前先等 start 就绪，冷启动首次额度查询不会落在空 Registry 上。
+        resolveApiAuthorization: async (request) => {
+          await providerRuntime.start();
+          return resolveApiKeyProviderQuotaAuthorization(request);
+        },
       }),
     )
     .register(ICodingPlanSubscriptionService, codingPlanSubscriptionService)
