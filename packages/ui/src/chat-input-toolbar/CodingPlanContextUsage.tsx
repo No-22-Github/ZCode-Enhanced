@@ -27,7 +27,6 @@ import { resolveCodingPlanQuotaResetLimit } from "@/lib/codingPlanQuotaResetUi.j
 import { getContextQuotaMeterGridClass } from "@/chat-input-toolbar/contextQuotaMeterGrid.js";
 import { resolveChatCodingPlanResetOpportunityBadge } from "@/chat-input-toolbar/codingPlanResetOpportunityBadge.js";
 import { ChatCodingPlanMcpUsageMeter } from "@/chat-input-toolbar/ChatCodingPlanMcpUsageMeter.js";
-import type { SidebarUsageCodingPlanSourceId } from "@/lib/sidebarUsageCodingPlanProviderPreference.js";
 
 export type ChatCodingPlanUsageRemainingConfig = {
   availableProviders: CodingPlanUsageAvailableProvider[];
@@ -36,9 +35,9 @@ export type ChatCodingPlanUsageRemainingConfig = {
   refreshing?: boolean;
   modelProvidersLoading: boolean;
   onEntitlementRefresh?: () => void | Promise<void>;
-  onProviderChange?: (providerId: SidebarUsageCodingPlanSourceId) => void;
+  onProviderChange?: (providerId: string) => void;
   onUsageClick?: () => void;
-  selectedProviderId?: SidebarUsageCodingPlanSourceId;
+  selectedProviderId?: string;
 };
 
 /** Composer 触发器 hover 展开面板后要求补播撒花的自动完成 used_at,按重置类型定位到对应额度条。
